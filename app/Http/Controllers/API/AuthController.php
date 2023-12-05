@@ -1,63 +1,127 @@
 <?php
 
-namespace App\Http\Controllers\API;
+namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\LoginRequest;
+use App\Http\Requests\RegisterRequest;
+use App\Http\Resources\UserResource;
+use App\Mail\VerifyEmail;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Http\Request;
 use App\Models\User;
-use Validator;
-use Auth;
+use App\Models\UserToRole;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+use Illuminate\Auth\Events\Registered;
+use Illuminate\Foundation\Auth\EmailVerificationRequest;
+use Illuminate\Support\Facades\URL;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redirect;
 
 class AuthController extends Controller
 {
-    //
-    public function register(Request $request){
-        $validator = Validator::make($request->all(), [
-            'name' => 'required',
+    public function login(Request $request)
+    {
+        $rules = [
             'email' => 'required|email',
             'password' => 'required',
-            'confirm_password' => 'required|same:password'
-        ]);
-        if ($validator-> fails()) {
-            return response()->json([
+        ];
+
+        $customMessages = [
+            'required' => 'Kolom :attribute tidak boleh kosong.',
+            'email' => 'Format email tidak valid.',
+        ];
+
+        try {
+            $validator = Validator::make($request->all(), $rules, $customMessages);
+
+            if ($validator->fails()) {
+                $errorMessages = [];
+                foreach ($validator->errors()->messages() as $field => $messages) {
+                    $errorMessages[] = "$field : " . implode(', ', $messages);
+                }
+                throw ValidationException::withMessages(['message' => $errorMessages]);
+            }
+
+            $credentials = $request->only('email', 'password');
+            if (Auth::attempt($credentials)) {
+                $user = Auth::user();
+                $token = $user->createToken('')->plainTextToken;
+
+                return response()->json(
+                    [
+                        'success' => true,
+                        'message' => 'Berhasil masuk.',
+                        'data' => [
+                            'token' => $token,
+                        ],
+                    ],
+                    Response::HTTP_OK,
+                );
+            }
+
+            $errorMessages = ['Akun Tidak Terdaftar'];
+            throw ValidationException::withMessages(['message' => $errorMessages]);
+        } catch (ValidationException $e) {
+            $errorResponse = [
                 'success' => false,
-                'message' => 'Ada kesalahan',
-                'data' => $validator->errors()
-            ]);
+                'message' => $e->errors(),
+            ];
+            return response()->json($errorResponse, Response::HTTP_BAD_REQUEST);
         }
-
-        $input = $request->all();
-        $input['password'] = bcrypt($input['password']);
-        $user = User::create($input);
-
-        $success['token'] = $user->createToken('auth_token')->plainTextToken;
-        $success['name'] = $user->name;
-
-        return response()->json([
-            'success' => true,
-                'message' => 'Sukses Register',
-                'data' => $success
-        ]);
     }
 
-    public function login(Request $request){
-        if (Auth::attempt(['email' => $request->email, 'password' => $request->password])) {
-            $auth = Auth::user();
-            $success['token'] = $auth->createToken('auth_token')->plainTextToken;
-            $success['name'] = $auth->name;
-            $success['email'] = $auth->email;
+    public function register(Request $request)
+    {
+        $request->validate([
+            'name' => 'required|string',
+            'email' => 'required|string|email|unique:users',
+            'password' => ['required', 'string', 'min:8'],
+        ]);
 
+        $user = User::create([
+            'name' => $request->input('name'),
+            'email' => $request->input('email'),
+            'password' => bcrypt($request->input('password')),
+            'email_verified_at' => now(),
+        ]);
+
+        $messageBerhasil = 'Registrasi berhasil.';
+
+        return response()->json(
+            [
+                'status' => true,
+                'message' => $messageBerhasil,
+            ],
+            Response::HTTP_CREATED
+        );
+    }
+
+    public function logout(Request $request)
+    {
+        try {
+            auth()
+                ->user()
+                ->tokens()
+                ->delete();
             return response()->json([
                 'success' => true,
-                'message' => 'Sukses Login',
-                'data' => $success
+                'message' => 'Berhasil keluar.',
             ]);
-        }else{
-            return response()->json([
-                'success' => False,
-                'message' => 'Cek Kembali email dan password',
-                'data' => null
-            ]);
+        } catch (\Exception $e) {
+            return response()->json(
+                [
+                    'success' => false,
+                    'message' => 'Gagal keluar. Silakan coba lagi.',
+                ],
+                Response::HTTP_BAD_REQUEST,
+            );
         }
     }
 }
